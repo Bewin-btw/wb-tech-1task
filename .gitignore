@@ -1,0 +1,114 @@
+# --- ОС и прочее ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# --- Секреты/конфиги ---
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.key
+*.crt
+*.pem
+
+# --- Go: сборки/артефакты ---
+/bin/
+/build/
+/dist/
+/out/
+/coverage/
+/tmp/
+/cache/
+/.internal/
+/*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.cover
+coverage.out
+profile*.txt
+
+# Если используете vendoring — удалите следующую строку
+/vendor/
+
+# --- Модули/зависимости ---
+# go модульный кеш не хранится в репо, но на всякий случай:
+.gocache/
+.gomodcache/
+
+# --- Логи ---
+*.log
+logs/
+*.pid
+
+# --- Инструменты разработки ---
+.air.toml
+air.toml
+tmp/
+.restart
+reflex.conf
+
+# --- IDE/редакторы ---
+.vscode/
+.vscode-*
+.idea/
+*.iml
+*.ipr
+*.iws
+*.sublime-*
+.fleet/
+
+# --- Docker / Compose ---
+# локальные override-файлы
+docker-compose.override.yml
+docker-compose.*.yml
+
+# билды и кэши
+.docker/
+docker/
+**/.dockerignore
+
+# локальные тома/данные, если монтируете в проект
+/data/
+/data/**
+
+# --- Kafka / Zookeeper локальные данные ---
+kafka-logs/
+kafka/
+zookeeper/
+zk-data/
+zk-logs/
+
+# --- Postgres локальные данные/дампы ---
+pgdata/
+postgres-data/
+*.sql.gz
+*.dump
+*.sql.tmp
+
+# --- Front/SPA артефакты (если есть админка внутри репо) ---
+node_modules/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Тестовые/фикстурные данные ---
+/testdata/**/*
+!testdata/.keep
+
+# --- Генерируемые файлы (protobuf/openapi и т.п.) ---
+/gen/
+/generated/
+/swagger/
+/openapi/*.json
+openapi/*.yaml
+
+# --- Kubernetes (локальные) ---
+.kube/

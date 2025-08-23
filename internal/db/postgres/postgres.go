@@ -285,8 +285,10 @@ func (r *PostgresRepository) GetAllOrders(ctx context.Context) ([]*models.Order,
 			return nil, err
 		}
 
-		if order, err := r.GetOrder(ctx, orderUID); err != nil {
+		order, err := r.GetOrder(ctx, orderUID)
+		if err != nil {
 			log.Printf("failed to get order %v: %v", orderUID, err)
+			continue
 		}
 		orders = append(orders, order)
 	}

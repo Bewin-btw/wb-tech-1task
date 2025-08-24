@@ -47,7 +47,7 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	order, err := h.orderService.GetOrder(orderUID)
+	order, err := h.orderService.GetOrder(r.Context(), orderUID)
 	if err != nil {
 		if errors.Is(err, fmt.Errorf("order not found")) {
 			http.Error(w, "Order not found", http.StatusNotFound)

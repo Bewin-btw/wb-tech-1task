@@ -93,7 +93,7 @@ func createTables(db *sql.DB) error {
 
 	for _, table := range tables {
 		if _, err := db.Exec(table); err != nil {
-			return fmt.Errorf("failed to create table %v: %v", table, err)
+			return fmt.Errorf("failed to create table %s: %v", table, err)
 		}
 	}
 
@@ -287,7 +287,7 @@ func (r *PostgresRepository) GetAllOrders(ctx context.Context) ([]*models.Order,
 
 		order, err := r.GetOrder(ctx, orderUID)
 		if err != nil {
-			log.Printf("failed to get order %v: %v", orderUID, err)
+			log.Printf("failed to get order %s: %v", orderUID, err)
 			continue
 		}
 		orders = append(orders, order)

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	_ "github.com/lib/pq"
 	"log"
+	"time"
 	"wb-tech-1task/internal/models"
 )
 
@@ -19,8 +21,18 @@ func NewPostgresRepository(connectionString string) (*PostgresRepository, error)
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %v", err)
+	deadline := time.Now().Add(30 * time.Second)
+
+	for {
+		if err = db.Ping(); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			db.Close()
+			return nil, fmt.Errorf("failed to ping database after retries: %v", err)
+		}
+		log.Printf("postgres ping failed: %v — retrying...", err)
+		time.Sleep(2 * time.Second)
 	}
 
 	if err := createTables(db); err != nil {

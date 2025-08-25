@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -49,7 +48,7 @@ func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
 
 	order, err := h.orderService.GetOrder(r.Context(), orderUID)
 	if err != nil {
-		if errors.Is(err, fmt.Errorf("order not found")) {
+		if errors.Is(err, service.ErrOrderNotFound) {
 			http.Error(w, "Order not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "Internal error", http.StatusInternalServerError)

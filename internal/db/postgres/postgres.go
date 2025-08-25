@@ -9,6 +9,7 @@ import (
 	"log"
 	"time"
 	"wb-tech-1task/internal/models"
+	"wb-tech-1task/internal/service"
 )
 
 type PostgresRepository struct {
@@ -129,7 +130,7 @@ func (r *PostgresRepository) GetOrder(ctx context.Context, orderUID string) (*mo
 		&order.DeliveryService, &order.Shardkey, &order.SmID, &order.DateCreated, &order.OofShard)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("order not found")
+			return nil, service.ErrOrderNotFound
 		}
 	}
 

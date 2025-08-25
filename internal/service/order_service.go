@@ -52,6 +52,10 @@ func (s *OrderService) GetOrder(ctx context.Context, orderUID string) (*models.O
 }
 
 func (s *OrderService) SaveOrder(ctx context.Context, order *models.Order) error {
+	if _, err := s.repo.GetOrder(ctx, order.OrderUID); err == nil {
+		return ErrOrderExists
+	}
+
 	if err := s.repo.SaveOrder(ctx, order); err != nil {
 		return err
 	}

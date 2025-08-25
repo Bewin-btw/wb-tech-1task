@@ -29,7 +29,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d wb_orders"]
+      test: [ "CMD-SHELL", "pg_isready -U user -d wb_orders" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,7 +40,7 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     healthcheck:
-      test: ["CMD-SHELL", "echo stat | nc localhost 2181"]
+      test: [ "CMD-SHELL", "echo stat | nc localhost 2181" ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -59,12 +59,24 @@ services:
     ports:
       - "9092:9092"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list"]
+      test: [ "CMD-SHELL", "kafka-topics --bootstrap-server kafka:9092 --list" ]
       interval: 10s
       timeout: 5s
       retries: 10
     volumes:
       - kafka_data:/var/lib/kafka/data
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./scripts/create-topics.sh:/create-topics.sh:ro
+    entrypoint: [ "/bin/bash", "/create-topics.sh" ]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+    restart: "no"
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest

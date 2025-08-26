@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	_ "github.com/lib/pq"
@@ -46,67 +47,92 @@ func NewPostgresRepository(connectionString string) (*PostgresRepository, error)
 func createTables(db *sql.DB) error {
 	ordersTable := `
 	CREATE TABLE IF NOT EXISTS orders (
-		order_uid VARCHAR(50) PRIMARY KEY,
-		track_number VARCHAR(50) NOT NULL,
-		entry VARCHAR(10) NOT NULL,
-		locale VARCHAR(2) NOT NULL,
-		internal_signature VARCHAR(100),
-		customer_id VARCHAR(50) NOT NULL,
+		order_uid        VARCHAR(50) PRIMARY KEY,
+		track_number     VARCHAR(50) NOT NULL,
+		entry            VARCHAR(10) NOT NULL,
+		locale           VARCHAR(2) NOT NULL,
+		internal_signature     VARCHAR(100),
+		customer_id      VARCHAR(50) NOT NULL,
 		delivery_service VARCHAR(50) NOT NULL,
-		shardkey VARCHAR(10) NOT NULL,
-		sm_id INTEGER NOT NULL,
-		date_created TIMESTAMP NOT NULL,
-		oof_shard VARCHAR(10) NOT NULL
+		shardkey         VARCHAR(10) NOT NULL,
+		sm_id            INTEGER NOT NULL CHECK (sm_id >= 0),
+		date_created     TIMESTAMPTZ NOT NULL,
+		oof_shard        VARCHAR(10) NOT NULL,
+		raw_payload      JSONB,
+		created_at       TIMESTAMPTZ DEFAULT now() NOT NULL
 	);`
 
 	deliveryTable := `
 	CREATE TABLE IF NOT EXISTS delivery (
-		order_uid VARCHAR(50) PRIMARY KEY REFERENCES orders(order_uid) ON DELETE CASCADE,
-		name VARCHAR(100) NOT NULL,
-		phone VARCHAR(20) NOT NULL,
-		zip VARCHAR(10) NOT NULL,
-		city VARCHAR(50) NOT NULL,
-		address VARCHAR(100) NOT NULL,
-		region VARCHAR(50) NOT NULL,
-		email VARCHAR(100) NOT NULL
+		id         BIGSERIAL PRIMARY KEY,
+		order_uid  VARCHAR(50) NOT NULL REFERENCES orders(order_uid) ON DELETE CASCADE,
+		name       VARCHAR(100) NOT NULL,
+		phone      VARCHAR(30) NOT NULL,
+		zip        VARCHAR(20) NOT NULL,
+		city       VARCHAR(100) NOT NULL,
+		address    VARCHAR(200) NOT NULL,
+		region     VARCHAR(100) NOT NULL,
+		email      VARCHAR(200) NOT NULL,
+		UNIQUE (order_uid)
 	);`
 
 	paymentTable := `
 	CREATE TABLE IF NOT EXISTS payment (
-		transaction VARCHAR(50) PRIMARY KEY REFERENCES orders(order_uid) ON DELETE CASCADE,
-		request_id VARCHAR(50),
-		currency VARCHAR(3) NOT NULL,
-		provider VARCHAR(50) NOT NULL,
-		amount INTEGER NOT NULL,
-		payment_dt BIGINT NOT NULL,
-		bank VARCHAR(50) NOT NULL,
+		id            BIGSERIAL PRIMARY KEY,
+		order_uid     VARCHAR(50) NOT NULL REFERENCES orders(order_uid) ON DELETE CASCADE,
+		transaction   VARCHAR(100) NOT NULL UNIQUE,
+		request_id    VARCHAR(100),
+		currency      VARCHAR(3) NOT NULL CHECK (char_length(currency) = 3),
+		provider      VARCHAR(100) NOT NULL,
+		amount        INTEGER NOT NULL,
+		payment_dt    BIGINT NOT NULL,
+		bank          VARCHAR(100) NOT NULL,
 		delivery_cost INTEGER NOT NULL,
-		goods_total INTEGER NOT NULL,
-		custom_fee INTEGER NOT NULL
+		goods_total   INTEGER NOT NULL,
+		custom_fee    INTEGER NOT NULL
 	);`
 
 	itemsTable := `
 	CREATE TABLE IF NOT EXISTS items (
-		id SERIAL PRIMARY KEY,
-		order_uid VARCHAR(50) REFERENCES orders(order_uid) ON DELETE CASCADE,
-		chrt_id INTEGER NOT NULL,
+		id         BIGSERIAL PRIMARY KEY,
+		order_uid  VARCHAR(50) NOT NULL REFERENCES orders(order_uid) ON DELETE CASCADE,
+		chrt_id    BIGINT NOT NULL,
 		track_number VARCHAR(50) NOT NULL,
-		price INTEGER NOT NULL,
-		rid VARCHAR(50) NOT NULL,
-		name VARCHAR(100) NOT NULL,
-		sale INTEGER NOT NULL,
-		size VARCHAR(10) NOT NULL,
+		price      INTEGER NOT NULL,
+		rid        VARCHAR(100) NOT NULL,
+		name       TEXT NOT NULL,
+		sale       INTEGER NOT NULL CHECK (sale >= 0),
+		size       VARCHAR(20) NOT NULL,
 		total_price INTEGER NOT NULL,
-		nm_id INTEGER NOT NULL,
-		brand VARCHAR(100) NOT NULL,
-		status INTEGER NOT NULL
+		nm_id      BIGINT NOT NULL,
+		brand      VARCHAR(200) NOT NULL,
+		status     INTEGER NOT NULL CHECK (status >= 0),
+		UNIQUE (order_uid, chrt_id)
 	);`
 
-	tables := []string{ordersTable, deliveryTable, paymentTable, itemsTable}
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_orders_track_number ON orders(track_number);",
+		"CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);",
+		"CREATE INDEX IF NOT EXISTS idx_orders_date_created ON orders(date_created);",
+		"CREATE INDEX IF NOT EXISTS idx_items_order_uid ON items(order_uid);",
+	}
 
-	for _, table := range tables {
-		if _, err := db.Exec(table); err != nil {
-			return fmt.Errorf("failed to create table %s: %v", table, err)
+	ddl := map[string]string{
+		"orders":   ordersTable,
+		"delivery": deliveryTable,
+		"payment":  paymentTable,
+		"items":    itemsTable,
+	}
+
+	for name, sqlStmt := range ddl {
+		if _, err := db.Exec(sqlStmt); err != nil {
+			return fmt.Errorf("failed to create %s table: %v", name, err)
+		}
+	}
+
+	for _, idx := range indexes {
+		if _, err := db.Exec(idx); err != nil {
+			return fmt.Errorf("failed to create index: %v", err)
 		}
 	}
 
@@ -114,7 +140,7 @@ func createTables(db *sql.DB) error {
 }
 
 func (r *PostgresRepository) GetOrder(ctx context.Context, orderUID string) (*models.Order, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +158,7 @@ func (r *PostgresRepository) GetOrder(ctx context.Context, orderUID string) (*mo
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, service.ErrOrderNotFound
 		}
+		return nil, err
 	}
 
 	delivery := &models.Delivery{}
@@ -143,25 +170,32 @@ func (r *PostgresRepository) GetOrder(ctx context.Context, orderUID string) (*mo
 		&delivery.Email)
 
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("delivery not found for order %s: %w", orderUID, err)
+		}
 		return nil, err
 	}
 	order.Delivery = *delivery
 
 	payment := &models.Payment{}
 	row = tx.QueryRowContext(ctx, `
-		SELECT transaction, request_id, currency, provider, amount, payment_dt, 
-		bank, delivery_cost, goods_total, custom_fee FROM payment WHERE transaction = $1`, orderUID)
+		SELECT transaction, request_id, currency, provider, amount, payment_dt, bank, delivery_cost, goods_total, custom_fee
+		FROM payment WHERE order_uid = $1`, orderUID)
 
 	err = row.Scan(&payment.Transaction, &payment.RequestID, &payment.Currency, &payment.Provider, &payment.Amount,
 		&payment.PaymentDt, &payment.Bank, &payment.DeliveryCost, &payment.GoodsTotal, &payment.CustomFee)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("payment not found for order %s: %w", orderUID, err)
+		}
 		return nil, err
 	}
+	payment.OrderUID = orderUID
 	order.Payment = *payment
 
 	rows, err := tx.QueryContext(ctx, `
 		SELECT chrt_id, track_number, price, rid, name, sale, size, total_price, nm_id, brand, status
-		FROM items WHERE order_uid = $1`, orderUID)
+		FROM items WHERE order_uid = $1 ORDER BY id`, orderUID)
 	if err != nil {
 		return nil, err
 	}
@@ -241,9 +275,9 @@ func (r *PostgresRepository) SaveOrder(ctx context.Context, order *models.Order)
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO payment (transaction, request_id, currency, provider, amount, 
+		INSERT INTO payment (order_uid, transaction, request_id, currency, provider, amount, 
 			payment_dt, bank, delivery_cost, goods_total, custom_fee)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (transaction) DO UPDATE SET
 			request_id = EXCLUDED.request_id,
 			currency = EXCLUDED.currency,
@@ -253,8 +287,9 @@ func (r *PostgresRepository) SaveOrder(ctx context.Context, order *models.Order)
 			bank = EXCLUDED.bank,
 			delivery_cost = EXCLUDED.delivery_cost,
 			goods_total = EXCLUDED.goods_total,
-			custom_fee = EXCLUDED.custom_fee`,
-		order.Payment.Transaction, order.Payment.RequestID, order.Payment.Currency,
+			custom_fee = EXCLUDED.custom_fee,
+			order_uid = EXCLUDED.order_uid`,
+		order.OrderUID, order.Payment.Transaction, order.Payment.RequestID, order.Payment.Currency,
 		order.Payment.Provider, order.Payment.Amount, order.Payment.PaymentDt,
 		order.Payment.Bank, order.Payment.DeliveryCost, order.Payment.GoodsTotal,
 		order.Payment.CustomFee)
@@ -269,23 +304,85 @@ func (r *PostgresRepository) SaveOrder(ctx context.Context, order *models.Order)
 		return err
 	}
 
+	insertItemSQL := `
+		INSERT INTO items (order_uid, chrt_id, track_number, price, rid, name, sale, size, total_price, nm_id, brand, status)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+	`
 	for _, item := range order.Items {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO items (order_uid, chrt_id, track_number, price, rid, name, 
-				sale, size, total_price, nm_id, brand, status)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			order.OrderUID, item.ChrtID, item.TrackNumber, item.Price, item.Rid,
-			item.Name, item.Sale, item.Size, item.TotalPrice, item.NmID, item.Brand,
-			item.Status)
+		_, err := tx.ExecContext(ctx, insertItemSQL, order.OrderUID, item.ChrtID, item.TrackNumber, item.Price,
+			item.Rid, item.Name, item.Sale, item.Size, item.TotalPrice, item.NmID, item.Brand, item.Status)
 		if err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *PostgresRepository) GetAllOrders(ctx context.Context) ([]*models.Order, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT order_uid FROM orders")
+	query := `
+    SELECT json_build_object(
+      'order_uid', o.order_uid,
+      'track_number', o.track_number,
+      'entry', o.entry,
+      'locale', o.locale,
+      'internal_signature', o.internal_signature,
+      'customer_id', o.customer_id,
+      'delivery_service', o.delivery_service,
+      'shardkey', o.shardkey,
+      'sm_id', o.sm_id,
+      'date_created', o.date_created,
+      'oof_shard', o.oof_shard,
+      'delivery', json_build_object(
+        'name', d.name, 
+        'phone', d.phone, 
+        'zip', d.zip, 
+        'city', d.city, 
+        'address', d.address, 
+        'region', d.region, 
+        'email', d.email
+      ),
+      'payment', json_build_object(
+        'transaction', p.transaction, 
+        'request_id', p.request_id, 
+        'currency', p.currency, 
+        'provider', p.provider, 
+        'amount', p.amount, 
+        'payment_dt', p.payment_dt, 
+        'bank', p.bank, 
+        'delivery_cost', p.delivery_cost, 
+        'goods_total', p.goods_total, 
+        'custom_fee', p.custom_fee
+      ),
+      'items', COALESCE(it.items, '[]'::json)
+    ) AS order_json
+    FROM orders o
+    LEFT JOIN delivery d ON d.order_uid = o.order_uid
+    LEFT JOIN payment p ON p.order_uid = o.order_uid
+    LEFT JOIN (
+      SELECT order_uid, json_agg(json_build_object(
+        'chrt_id', chrt_id,
+        'track_number', track_number,
+        'price', price,
+        'rid', rid,
+        'name', name,
+        'sale', sale,
+        'size', size,
+        'total_price', total_price,
+        'nm_id', nm_id,
+        'brand', brand,
+        'status', status
+      )) AS items
+      FROM items
+      GROUP BY order_uid
+    ) it ON it.order_uid = o.order_uid
+    ORDER BY o.date_created DESC;
+    `
+
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -293,22 +390,25 @@ func (r *PostgresRepository) GetAllOrders(ctx context.Context) ([]*models.Order,
 
 	var orders []*models.Order
 	for rows.Next() {
-		var orderUID string
-		if err = rows.Scan(&orderUID); err != nil {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
 
-		order, err := r.GetOrder(ctx, orderUID)
-		if err != nil {
-			log.Printf("failed to get order %s: %v", orderUID, err)
-			continue
+		var order models.Order
+		if err := json.Unmarshal(raw, &order); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal order json: %w", err)
 		}
-		orders = append(orders, order)
+
+		order.Payment.OrderUID = order.OrderUID
+
+		orders = append(orders, &order)
 	}
 
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
 	return orders, nil
 }
 

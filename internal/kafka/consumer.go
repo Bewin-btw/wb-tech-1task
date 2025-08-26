@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	kafka "github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go"
+	"io"
 	"log"
 	"time"
 	"wb-tech-1task/internal/models"
@@ -51,14 +52,25 @@ func (c *Consumer) consumeMessages(ctx context.Context) {
 		default:
 			msg, err := c.reader.FetchMessage(ctx)
 			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				if err == io.EOF {
+					return
+				}
 				log.Printf("Failed to fetch message: %v", err)
 				continue
 			}
 			if err := c.processMessage(ctx, msg); err != nil {
 				log.Printf("Failed to process message: %v", err)
-				c.sendToDeadLetter(ctx, msg)
+				if derr := c.sendToDeadLetter(ctx, msg, err); derr != nil {
+					log.Printf("Failed to send to dead letter queue: %v", derr)
+				}
+				continue
 			} else {
-				c.reader.CommitMessages(ctx, msg)
+				if err := c.reader.CommitMessages(ctx, msg); err != nil {
+					log.Printf("failed to commit message offset=%d: %v", msg.Offset, err)
+				}
 			}
 		}
 	}
@@ -70,61 +82,36 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 		return err
 	}
 
-	if err := validateOrder(&order); err != nil {
+	if err := order.Validate(); err != nil {
 		return err
 	}
 
-	return c.service.SaveOrder(ctx, &order)
-}
-
-func (c *Consumer) sendToDeadLetter(ctx context.Context, msg kafka.Message) {
-	err := c.deadLetterWriter.WriteMessages(ctx, kafka.Message{
-		Value: msg.Value,
-		Headers: append(msg.Headers, kafka.Header{
-			Key:   "error",
-			Value: []byte("processing_failed"),
-		}),
-	})
-
-	if err != nil {
-		log.Printf("Failed to send to dead letter queue: %v", err)
+	if err := c.service.SaveOrder(ctx, &order); err != nil {
+		return err
 	}
-}
-
-func validateOrder(order *models.Order) error {
-	if order.OrderUID == "" {
-		return errors.New("order_uid is required")
-	}
-	if order.TrackNumber == "" {
-		return errors.New("track_number is required")
-	}
-	if order.Entry == "" {
-		return errors.New("entry is required")
-	}
-	if order.CustomerID == "" {
-		return errors.New("customer_id is required")
-	}
-	if order.DeliveryService == "" {
-		return errors.New("delivery_service is required")
-	}
-
-	if order.Delivery.Name == "" {
-		return errors.New("delivery.name is required")
-	}
-	if order.Payment.Transaction == "" {
-		return errors.New("payment.transaction is required")
-	}
-	if len(order.Items) == 0 {
-		return errors.New("items cannot be empty")
-	}
-
 	return nil
 }
 
-func (c *Consumer) Close() error {
-	if err := c.reader.Close(); err != nil {
-		return err
-	}
+func (c *Consumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, procErr error) error {
+	headers := append(msg.Headers, kafka.Header{
+		Key:   "error",
+		Value: []byte(procErr.Error()),
+	})
+	return c.deadLetterWriter.WriteMessages(ctx, kafka.Message{
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: headers,
+		Time:    time.Now(),
+	})
+}
 
-	return c.deadLetterWriter.Close()
+func (c *Consumer) Close() error {
+	var firstErr error
+	if err := c.reader.Close(); err != nil {
+		firstErr = err
+	}
+	if err := c.deadLetterWriter.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }

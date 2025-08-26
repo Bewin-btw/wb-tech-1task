@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS delivery (
     );
 
 CREATE TABLE IF NOT EXISTS payment (
-                                       transaction VARCHAR(50) PRIMARY KEY REFERENCES orders(order_uid) ON DELETE CASCADE,
+                                       id            BIGSERIAL PRIMARY KEY,
+                                       order_uid     VARCHAR(50) NOT NULL REFERENCES orders(order_uid) ON DELETE CASCADE,
+    transaction   VARCHAR(100) NOT NULL UNIQUE,
     request_id VARCHAR(50),
     currency VARCHAR(3) NOT NULL,
     provider VARCHAR(50) NOT NULL,

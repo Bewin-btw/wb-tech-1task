@@ -86,7 +86,11 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	//}
 
 	if err := h.orderService.SaveOrder(r.Context(), &order); err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		if errors.Is(err, service.ErrOrderExists) {
+			http.Error(w, "Order id is occupied already", http.StatusBadRequest)
+		} else {
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+		}
 		log.Printf("error on saving order: %v", err)
 		return
 	}

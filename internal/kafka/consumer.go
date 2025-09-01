@@ -4,21 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/segmentio/kafka-go"
 	"io"
 	"log"
 	"time"
+
+	kafka "github.com/segmentio/kafka-go"
+
 	"wb-tech-1task/internal/models"
-	"wb-tech-1task/internal/service"
 )
 
-type Consumer struct {
-	reader           *kafka.Reader
-	service          *service.OrderService
-	deadLetterWriter *kafka.Writer
+type Reader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
 }
 
-func NewConsumer(brokers []string, topic, groupID string, service *service.OrderService) *Consumer {
+type Writer interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
+type OrderSaver interface {
+	SaveOrder(ctx context.Context, order *models.Order) error
+}
+
+type Consumer struct {
+	reader           Reader
+	service          OrderSaver
+	deadLetterWriter Writer
+}
+
+func NewConsumer(brokers []string, topic, groupID string, svc OrderSaver) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		Topic:    topic,
@@ -36,42 +52,35 @@ func NewConsumer(brokers []string, topic, groupID string, service *service.Order
 
 	return &Consumer{
 		reader:           reader,
-		service:          service,
-		deadLetterWriter: deadLetterWriter}
+		service:          svc,
+		deadLetterWriter: deadLetterWriter,
+	}
 }
 
-func (c *Consumer) Start(ctx context.Context) {
-	go c.consumeMessages(ctx)
-}
-
-func (c *Consumer) consumeMessages(ctx context.Context) {
+func (c *Consumer) Run(ctx context.Context) error {
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			msg, err := c.reader.FetchMessage(ctx)
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return
-				}
-				if err == io.EOF {
-					return
-				}
-				log.Printf("Failed to fetch message: %v", err)
-				continue
+		msg, err := c.reader.FetchMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil
 			}
-			if err := c.processMessage(ctx, msg); err != nil {
-				log.Printf("Failed to process message: %v", err)
-				if derr := c.sendToDeadLetter(ctx, msg, err); derr != nil {
-					log.Printf("Failed to send to dead letter queue: %v", derr)
-				}
-				continue
-			} else {
-				if err := c.reader.CommitMessages(ctx, msg); err != nil {
-					log.Printf("failed to commit message offset=%d: %v", msg.Offset, err)
-				}
+			if err == io.EOF {
+				return nil
 			}
+			log.Printf("failed to fetch message: %v", err)
+			continue
+		}
+
+		if err := c.processMessage(ctx, msg); err != nil {
+			log.Printf("failed to process message: %v", err)
+			if derr := c.sendToDeadLetter(ctx, msg, err); derr != nil {
+				log.Printf("failed to send to dead letter queue: %v", derr)
+			}
+			continue
+		}
+
+		if err := c.reader.CommitMessages(ctx, msg); err != nil {
+			log.Printf("failed to commit message offset=%d: %v", msg.Offset, err)
 		}
 	}
 }
@@ -107,11 +116,15 @@ func (c *Consumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, proc
 
 func (c *Consumer) Close() error {
 	var firstErr error
-	if err := c.reader.Close(); err != nil {
-		firstErr = err
+	if c.reader != nil {
+		if err := c.reader.Close(); err != nil {
+			firstErr = err
+		}
 	}
-	if err := c.deadLetterWriter.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	if c.deadLetterWriter != nil {
+		if err := c.deadLetterWriter.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }

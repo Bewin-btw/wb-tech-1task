@@ -84,7 +84,6 @@ func (o *Order) Validate() error {
 		return errors.New("date_created is required and must be valid datetime")
 	}
 
-	// delivery
 	if o.Delivery.Name == "" {
 		return errors.New("delivery.name is required")
 	}
@@ -107,7 +106,6 @@ func (o *Order) Validate() error {
 		return errors.New("delivery.email is required")
 	}
 
-	// payment
 	if o.Payment.Transaction == "" {
 		return errors.New("payment.transaction is required")
 	}
@@ -121,7 +119,6 @@ func (o *Order) Validate() error {
 		return errors.New("payment.bank is required")
 	}
 
-	// items
 	if len(o.Items) == 0 {
 		return errors.New("items cannot be empty")
 	}

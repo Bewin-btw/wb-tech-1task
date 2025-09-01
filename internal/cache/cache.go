@@ -1,19 +1,20 @@
 package cache
 
 import (
-	"encoding/json"
 	"errors"
 	"sync"
 	"time"
+
 	"wb-tech-1task/internal/models"
 )
 
-// ttl, expirationTimes для возможности добавления кеша с ттл, LRU можно добавть в теории для прода
 type Cache struct {
 	sync.RWMutex
 	data            map[string]*models.Order
 	expirationTimes map[string]time.Time
 	ttl             time.Duration
+
+	stop chan struct{}
 }
 
 func New(ttl time.Duration) *Cache {
@@ -21,6 +22,7 @@ func New(ttl time.Duration) *Cache {
 		data:            make(map[string]*models.Order),
 		expirationTimes: make(map[string]time.Time),
 		ttl:             ttl,
+		stop:            make(chan struct{}),
 	}
 
 	if ttl > 0 {
@@ -30,16 +32,21 @@ func New(ttl time.Duration) *Cache {
 	return c
 }
 
+func (c *Cache) Close() {
+	select {
+	case <-c.stop:
+	default:
+		close(c.stop)
+	}
+}
+
 func (c *Cache) Set(order *models.Order) error {
 	if order == nil {
 		return errors.New("cannot add nil order to cache")
 	}
 	c.Lock()
 	defer c.Unlock()
-	orderCopy, err := c.deepCopyOrder(order)
-	if err != nil {
-		return err
-	}
+	orderCopy := c.copyOrder(order)
 
 	c.data[order.OrderUID] = orderCopy
 
@@ -59,16 +66,12 @@ func (c *Cache) Get(orderUID string) (*models.Order, bool, error) {
 	}
 
 	if c.ttl > 0 {
-		if expTime, exists := c.expirationTimes[order.OrderUID]; exists && time.Now().After(expTime) {
+		if expTime, ok := c.expirationTimes[orderUID]; ok && time.Now().After(expTime) {
 			return nil, false, nil
 		}
 	}
 
-	orderCopy, err := c.deepCopyOrder(order)
-	if err != nil {
-		return nil, false, err
-	}
-
+	orderCopy := c.copyOrder(order)
 	return orderCopy, true, nil
 }
 
@@ -78,17 +81,14 @@ func (c *Cache) GetAll() (map[string]*models.Order, error) {
 
 	result := make(map[string]*models.Order, len(c.data))
 
+	now := time.Now()
 	for k, v := range c.data {
 		if c.ttl > 0 {
-			if expTime, exists := c.expirationTimes[k]; exists && time.Now().After(expTime) {
+			if expTime, ok := c.expirationTimes[k]; ok && now.After(expTime) {
 				continue
 			}
 		}
-		orderCopy, err := c.deepCopyOrder(v)
-		if err != nil {
-			return nil, err
-		}
-		result[k] = orderCopy
+		result[k] = c.copyOrder(v)
 	}
 
 	return result, nil
@@ -102,13 +102,11 @@ func (c *Cache) Delete(orderUID string) {
 	delete(c.expirationTimes, orderUID)
 }
 
-// для удаления просроченых записей кеша
 func (c *Cache) Cleanup() {
 	c.Lock()
 	defer c.Unlock()
 
 	now := time.Now()
-
 	for uid, expTime := range c.expirationTimes {
 		if now.After(expTime) {
 			delete(c.data, uid)
@@ -117,20 +115,17 @@ func (c *Cache) Cleanup() {
 	}
 }
 
-func (c *Cache) deepCopyOrder(order *models.Order) (*models.Order, error) {
-	data, err := json.Marshal(order)
-	if err != nil {
-		return nil, err
+func (c *Cache) copyOrder(order *models.Order) *models.Order {
+	if order == nil {
+		return nil
 	}
-
-	var orderCopy models.Order
-
-	err = json.Unmarshal(data, &orderCopy)
-	if err != nil {
-		return nil, err
+	o := *order
+	if len(order.Items) > 0 {
+		items := make([]models.Item, len(order.Items))
+		copy(items, order.Items)
+		o.Items = items
 	}
-
-	return &orderCopy, nil
+	return &o
 }
 
 func (c *Cache) startCleanupRoutine() {
@@ -142,8 +137,13 @@ func (c *Cache) startCleanupRoutine() {
 	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.Cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			c.Cleanup()
+		case <-c.stop:
+			return
+		}
 	}
 }
 
@@ -171,10 +171,10 @@ func (c *Cache) DBBackup(orders []*models.Order) error {
 	defer c.Unlock()
 
 	for _, order := range orders {
-		orderCopy, err := c.deepCopyOrder(order)
-		if err != nil {
-			return err
+		if order == nil {
+			continue
 		}
+		orderCopy := c.copyOrder(order)
 		c.data[order.OrderUID] = orderCopy
 
 		if c.ttl > 0 {

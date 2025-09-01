@@ -96,7 +96,6 @@ function displayOrder(order) {
     document.getElementById('orderResult').innerHTML = orderHTML;
 }
 
-// Добавляем обработчик нажатия Enter в поле ввода
 document.getElementById('orderUid').addEventListener('keypress', function(e) {
     if (e.key === 'Enter') {
         getOrder();
